@@ -27,8 +27,9 @@ HONESTY NOTE (reproduced in every output):
 from __future__ import annotations
 
 import logging
+import socket
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,8 @@ import numpy as np
 from app.core.audio import (
     CONDITION_REGISTRY,
     apply_condition,
-    load_wav,
+    normalize_wav_bytes,
+    read_wav_tolerant,
     save_wav,
 )
 from app.core.budget import BudgetGuard, BudgetExceeded  # noqa: F401 (re-exported)
@@ -50,6 +52,8 @@ logger = logging.getLogger(__name__)
 
 # Noise seed — fixed for reproducibility.
 _NOISE_SEED = 42
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RETRY_DELAYS_S = (2.0, 5.0)
 
 # Preserve the legacy name -> SNR lookup while the full definitions live in the
 # audio condition registry.
@@ -90,6 +94,7 @@ class CaseResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "status": "ok",
             "sentence_id": self.sentence_id,
             "condition": self.condition,
             "tts_model": self.tts_model,
@@ -114,6 +119,58 @@ class CaseResult:
                 "Results are RELATIVE comparisons only, not real-world accuracy figures."
             ),
         }
+
+
+def _retry_status(exc: Exception) -> int | None:
+    status = getattr(exc, "http_status", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_timeout(exc: Exception) -> bool:
+    if getattr(exc, "timed_out", False):
+        return True
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    # Keep requests optional for FakeProvider-only installs and tests.
+    return "timeout" in type(exc).__name__.lower()
+
+
+def _provider_call(
+    kind: str,
+    budget: BudgetGuard,
+    operation,
+):
+    """Call a provider with budgeted retries for transient failures."""
+    started = time.monotonic()
+    for attempt in range(3):
+        budget.charge(kind)
+        try:
+            result = operation()
+            return replace(result, latency_s=time.monotonic() - started)
+        except Exception as exc:
+            status = _retry_status(exc)
+            retryable = status in _RETRYABLE_STATUSES or _is_timeout(exc)
+            if not retryable or attempt == 2:
+                logger.warning(
+                    "[pipeline] %s failed | attempt=%d error_type=%s http_status=%s",
+                    kind.upper(), attempt + 1, type(exc).__name__, status,
+                )
+                raise
+            delay = _RETRY_DELAYS_S[attempt]
+            logger.warning(
+                "[pipeline] %s transient failure | attempt=%d error_type=%s "
+                "http_status=%s retry_in=%.1fs",
+                kind.upper(), attempt + 1, type(exc).__name__, status, delay,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable retry loop")
 
 
 def _degrade(
@@ -164,29 +221,38 @@ def run_case(
             "[pipeline] TTS cache HIT | %s voice=%s model=%s",
             sentence_id, tts_voice, tts_model,
         )
+        normalized_bytes = normalize_wav_bytes(cached_bytes)  # type: ignore[arg-type]
+        if normalized_bytes != cached_bytes:
+            # Old cache entries may contain Gnani's invalid 0xFFFFFFFF header.
+            cache.put(text, tts_voice, tts_model, language, normalized_bytes)
         tts_result = SynthResult(
-            audio_bytes=cached_bytes,  # type: ignore[arg-type]
+            audio_bytes=normalized_bytes,
             model=tts_model,
             voice=tts_voice,
             latency_s=0.0,
         )
     else:
-        budget.charge("tts")
         logger.info(
-            "[pipeline] TTS API call | %s voice=%s model=%s budget=%s",
-            sentence_id, tts_voice, tts_model, budget.summary(),
+            "[pipeline] TTS request | %s voice=%s model=%s",
+            sentence_id, tts_voice, tts_model,
         )
-        tts_result = provider.synthesize(
-            text, voice=tts_voice, model=tts_model, language=language
+        tts_result = _provider_call(
+            "tts",
+            budget,
+            lambda: provider.synthesize(
+                text, voice=tts_voice, model=tts_model, language=language
+            ),
         )
-        cache.put(text, tts_voice, tts_model, language, tts_result.audio_bytes)
+        normalized_bytes = normalize_wav_bytes(tts_result.audio_bytes)
+        tts_result = replace(tts_result, audio_bytes=normalized_bytes)
+        cache.put(text, tts_voice, tts_model, language, normalized_bytes)
 
     original_wav_path = audio_dir / f"{sentence_id}_original.wav"
-    if not original_wav_path.exists():
-        original_wav_path.write_bytes(tts_result.audio_bytes)
-        logger.info("[pipeline] original TTS WAV saved | %s", original_wav_path)
+    # Always rewrite to repair originals created by earlier runs too.
+    original_wav_path.write_bytes(tts_result.audio_bytes)
+    logger.info("[pipeline] original TTS WAV saved | %s", original_wav_path)
 
-    audio, sr = load_wav(original_wav_path)
+    audio, sr = read_wav_tolerant(tts_result.audio_bytes)
     condition_definition = CONDITION_REGISTRY[condition]
     degraded_cache_path = cache.degraded_path(
         text,
@@ -208,16 +274,19 @@ def run_case(
     degraded_wav_path.write_bytes(degraded_cache_path.read_bytes())
     logger.info("[pipeline] degraded WAV saved | %s", degraded_wav_path)
 
-    budget.charge("stt")
     logger.info(
-        "[pipeline] STT API call | %s condition=%s model=%s format=%s budget=%s",
-        sentence_id, condition, stt_model, stt_format, budget.summary(),
+        "[pipeline] STT request | %s condition=%s model=%s format=%s",
+        sentence_id, condition, stt_model, stt_format,
     )
-    stt_result: TranscribeResult = provider.transcribe(
-        degraded_wav_path,
-        language=language,
-        model=stt_model,
-        format=stt_format,
+    stt_result: TranscribeResult = _provider_call(
+        "stt",
+        budget,
+        lambda: provider.transcribe(
+            degraded_wav_path,
+            language=language,
+            model=stt_model,
+            format=stt_format,
+        ),
     )
 
     references = [reference, *accepted_references]

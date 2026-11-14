@@ -1,4 +1,6 @@
 import math
+import io
+import struct
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -58,6 +60,74 @@ def load_wav(path) -> tuple[np.ndarray, int]:
         audio = audio.mean(axis=1)
 
     return audio, sample_rate
+
+
+def read_wav_tolerant(data: bytes) -> tuple[np.ndarray, int]:
+    """Decode a PCM WAV, tolerating Gnani's ``0xFFFFFFFF`` data-size header.
+
+    In that case, the data chunk extends to the end of the byte string; this is
+    the only reliable length available when the chunk length is a sentinel.
+    The SDK's linear PCM output is 16-bit little-endian PCM.
+    """
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError("Invalid RIFF/WAVE audio")
+
+    fmt: tuple[int, int, int] | None = None  # channels, sample rate, block align
+    pcm: bytes | None = None
+    bits_per_sample: int | None = None
+    offset = 12
+    while offset + 8 <= len(data):
+        chunk_id = data[offset : offset + 4]
+        chunk_size = struct.unpack_from("<I", data, offset + 4)[0]
+        chunk_start = offset + 8
+
+        if chunk_id == b"fmt ":
+            if chunk_size < 16 or chunk_start + 16 > len(data):
+                raise ValueError("Invalid WAV format chunk")
+            audio_format, channels, sample_rate, _byte_rate, block_align, bits = (
+                struct.unpack_from("<HHIIHH", data, chunk_start)
+            )
+            if audio_format != 1:
+                raise ValueError("Only PCM WAV audio is supported")
+            fmt = channels, sample_rate, block_align
+            bits_per_sample = bits
+        elif chunk_id == b"data":
+            actual_size = len(data) - chunk_start if chunk_size == 0xFFFFFFFF else min(
+                chunk_size, len(data) - chunk_start
+            )
+            pcm = data[chunk_start : chunk_start + actual_size]
+            # A sentinel length cannot identify following chunks, so its PCM
+            # data is treated as the remaining file contents.
+            if chunk_size == 0xFFFFFFFF:
+                break
+
+        next_offset = chunk_start + chunk_size + (chunk_size & 1)
+        if next_offset <= offset or next_offset > len(data):
+            break
+        offset = next_offset
+
+    if fmt is None or pcm is None or bits_per_sample != 16:
+        raise ValueError("WAV must contain 16-bit PCM format and data chunks")
+    channels, sample_rate, block_align = fmt
+    if channels < 1 or sample_rate < 1 or block_align != channels * 2:
+        raise ValueError("Invalid WAV channel or sample-rate metadata")
+    usable_size = len(pcm) - (len(pcm) % block_align)
+    samples = np.frombuffer(pcm[:usable_size], dtype="<i2")
+    if channels > 1:
+        samples = samples.reshape(-1, channels).astype(np.float32).mean(axis=1)
+        audio = samples / 32768.0
+    else:
+        audio = samples.astype(np.float32) / 32768.0
+    return audio.astype(np.float32, copy=False), sample_rate
+
+
+def normalize_wav_bytes(data: bytes) -> bytes:
+    """Return valid mono 16-bit PCM WAV bytes from a supported PCM WAV."""
+    audio, sample_rate = read_wav_tolerant(data)
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+    buffer = io.BytesIO()
+    wavfile.write(buffer, sample_rate, pcm)
+    return buffer.getvalue()
 
 
 def save_wav(path, audio: np.ndarray, sample_rate: int) -> None:
