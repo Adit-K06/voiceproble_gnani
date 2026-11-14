@@ -1,0 +1,189 @@
+{
+  "_comment": "VoiceProbe test suite — synthetic data only. No real phone numbers, Aadhaar, PAN, or account numbers.",
+  "sentences": [
+    {
+      "id": "hi_001",
+      "language": "hi-IN",
+      "text": "आपके खाते में दो लाख पचास हजार रुपये जमा हो गए हैं।",
+      "entities": [
+        {
+          "type": "amount",
+          "value": "250000",
+          "spoken": "दो लाख पचास हजार"
+        }
+      ],
+      "expected_entities": [
+        {
+          "type": "amount",
+          "value": 250000
+        }
+      ]
+    },
+    {
+      "id": "hi_002",
+      "language": "hi-IN",
+      "text": "आपकी ईएमआई तीन हजार पाँच सौ रुपये प्रति माह है।",
+      "entities": [
+        {
+          "type": "amount",
+          "value": "3500",
+          "spoken": "तीन हजार पाँच सौ"
+        }
+      ],
+      "expected_entities": [
+        {
+          "type": "amount",
+          "value": 3500
+        }
+      ]
+    },
+    {
+      "id": "hi_003",
+      "language": "hi-IN",
+      "text": "बीस तारीख को आपका बिल भुगतान होगा।",
+      "entities": [
+        {
+          "type": "date_day",
+          "value": "20",
+          "spoken": "बीस"
+        }
+      ],
+      "expected_entities": []
+    },
+    {
+      "id": "hi_004",
+      "language": "hi-IN",
+      "text": "एक करोड़ रुपये का ऋण तीस साल के लिए उपलब्ध है।",
+      "entities": [
+        {
+          "type": "amount",
+          "value": "10000000",
+          "spoken": "एक करोड़"
+        }
+      ],
+      "expected_entities": [
+        {
+          "type": "amount",
+          "value": 10000000
+        }
+      ]
+    },
+    {
+      "id": "hi_005",
+      "language": "hi-IN",
+      "text": "आपका account balance check करने के liye star one dabaye.",
+      "entities": [],
+      "accepted_references": [
+        "आपका अकाउंट बैलेंस चेक करने के लिए स्टार वन दबाएँ।"
+      ],
+      "expected_entities": []
+    },
+    {
+      "id": "hi_006",
+      "language": "hi-IN",
+      "text": "अगले सोमवार को शाखा बंद रहेगी।",
+      "entities": [
+        {
+          "type": "day_of_week",
+          "value": "Monday",
+          "spoken": "सोमवार"
+        }
+      ],
+      "expected_entities": []
+    },
+    {
+      "id": "hi_007",
+      "language": "hi-IN",
+      "text": "सात दिन के अंदर आपका आवेदन स्वीकार किया जाएगा।",
+      "entities": [
+        {
+          "type": "duration_days",
+          "value": "7",
+          "spoken": "सात"
+        }
+      ],
+      "expected_entities": []
+    },
+    {
+      "id": "hi_008",
+      "language": "hi-IN",
+      "text": "एक करोड़ रुपये का ऋण तीस साल के लिए उपलब्ध है।",
+      "entities": [
+        {
+          "type": "amount",
+          "value": "10000000",
+          "spoken": "एक करोड़"
+        },
+        {
+          "type": "duration_years",
+          "value": "30",
+          "spoken": "तीस"
+        }
+      ],
+      "expected_entities": [
+        {
+          "type": "amount",
+          "value": 10000000
+        }
+      ]
+    }
+  ],
+  "conditions": [
+    {
+      "id": "clean",
+      "snr_db": null,
+      "description": "No noise (clean TTS output)"
+    },
+    {
+      "id": "snr30",
+      "snr_db": 30,
+      "description": "High SNR — faint background noise"
+    },
+    {
+      "id": "snr20",
+      "snr_db": 20,
+      "description": "Medium SNR — moderate noise"
+    },
+    {
+      "id": "snr10",
+      "snr_db": 10,
+      "description": "Low SNR — heavy noise"
+    }
+  ],
+  "tts_configs": [
+    {
+      "id": "timbre25_nalini",
+      "model": "timbre-v2.5",
+      "voice": "Nalini",
+      "language": "hi-IN"
+    },
+    {
+      "id": "timbre25_deepak",
+      "model": "timbre-v2.5",
+      "voice": "Deepak",
+      "language": "hi-IN"
+    }
+  ],
+  "stt_configs": [
+    {
+      "id": "prisma25_verbatim",
+      "model": null,
+      "format": "verbatim"
+    },
+    {
+      "id": "prisma25_transcribe",
+      "model": null,
+      "format": "transcribe"
+    },
+    {
+      "id": "prisma30_verbatim",
+      "model": "prisma-v3.0",
+      "format": "verbatim"
+    },
+    {
+      "id": "prisma30_transcribe",
+      "model": "prisma-v3.0",
+      "format": "transcribe"
+    }
+  ]
+}
